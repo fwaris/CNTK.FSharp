@@ -2,6 +2,8 @@
 open System.Windows.Forms
 open System.Drawing
 open System.Runtime.InteropServices
+open System.Drawing.Imaging
+open System
 
 let scaler (sMin,sMax) (vMin,vMax) (v:float) =
     if v < vMin then failwith "out of min range for scaling"
@@ -14,16 +16,34 @@ let scaler (sMin,sMax) (vMin,vMax) (v:float) =
     scaler (0.1, 0.9) (-200., -100.) -110.
     *)
 
-let toGray (w,h) bytes =
-    new Bitmap(
-        w,h,w,
-        Imaging.PixelFormat.Format8bppIndexed,
-        Marshal.UnsafeAddrOfPinnedArrayElement(bytes,0))
-
-let show (w,h) imgList =
+let toGray (w,h) (vals:byte[]) =
+    let xs = vals |> Seq.collect (fun g ->  [255uy; g; g; g])|> Seq.toArray
+    let bmp = new Bitmap(w,h,Imaging.PixelFormat.Format32bppArgb)
+    let data = bmp.LockBits(
+                    new Rectangle(0, 0, bmp.Width, bmp.Height),
+                    ImageLockMode.ReadWrite,
+                    bmp.PixelFormat);
+    Marshal.Copy(xs, 0, data.Scan0, xs.Length);
+    bmp.UnlockBits(data)
+    bmp
+    
+let show (bmp:Bitmap) = 
     let form = new Form()
     form.Width  <- 400
-    form.Height <- 300
+    form.Height <- 400
+    form.Visible <- true 
+    form.Text <- "Image"
+    let p = new PictureBox(
+                    Image=bmp,
+                    Dock = DockStyle.Fill,
+                    SizeMode=PictureBoxSizeMode.StretchImage)
+    form.Controls.Add(p)
+    form.Show()
+
+let showGrid (w,h) imgList =
+    let form = new Form()
+    form.Width  <- 600
+    form.Height <- 400
     form.Visible <- true 
     form.Text <- "Images"
     let grid = new TableLayoutPanel()

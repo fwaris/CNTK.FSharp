@@ -116,13 +116,13 @@ let build_graph noise_shape image_shape g_progress_printer d_progress_printer =
 
     let G_learner = C.FSAdaGradLearner(
                         X_fake.Parameters() |> parmVector,
-                        new TrainingParameterScheduleDouble(lr),
-                        new TrainingParameterScheduleDouble(0.9985724484938566))
+                        new TrainingParameterScheduleDouble(lr,minibatch_size),
+                        new TrainingParameterScheduleDouble(0.9985724484938566,minibatch_size))
 
     let D_learner = C.FSAdaGradLearner(
                         D_real.Parameters() |> parmVector,
-                        new TrainingParameterScheduleDouble(lr),
-                        new TrainingParameterScheduleDouble(0.9985724484938566))
+                        new TrainingParameterScheduleDouble(lr,minibatch_size),
+                        new TrainingParameterScheduleDouble(0.9985724484938566,minibatch_size))
 
 
     let G_trainer = C.CreateTrainer(X_fake,G_loss,null,lrnVector [G_learner], g_progress_printer)
@@ -185,6 +185,7 @@ let train (reader_train:MinibatchSource) =
 
 let reader_train = minibatchSource
 let G_input, G_output, G_trainer_loss = train reader_train
+G_output.Save(Path.Combine(@"D:\repodata\fscntk","Generator.bin"))
 
 let noise = noise_sample 36
 let outMap = idict[G_output.Output,(null:Value)]
@@ -193,11 +194,15 @@ let imgs = outMap.[G_output.Output].GetDenseData<float32>(G_output.Output)
 
 #load "..\ImageUtils.fs"
 open ImageUtils
+
 let sMin,sMax = Seq.collect (fun x->x) imgs |> Seq.min, Seq.collect (fun x->x) imgs |> Seq.max
 let grays = 
     imgs
+    //|> Seq.map (Seq.map (fun x-> if x < 0.f then 0uy else 255uy)>>Seq.toArray)
     |> Seq.map (Seq.map (fun x -> scaler (0.,255.) (float sMin, float sMax) (float x) |> byte) >> Seq.toArray)
     |> Seq.map (ImageUtils.toGray (28,28))
+    |> Seq.toArray
 
-ImageUtils.show (6,6) grays
+ImageUtils.show grays.[0]
+ImageUtils.showGrid (6,6) grays
 

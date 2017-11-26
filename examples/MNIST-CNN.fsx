@@ -28,11 +28,12 @@ let FullyConnectedLinearLayer(
         new Parameter(
             shape [outputDim; inputDim], 
             DataType.Float,
-            CNTKLib.GlorotUniformInitializer(
-                float CNTKLib.DefaultParamInitScale,
-                CNTKLib.SentinelValueForInferParamInitRank,
-                CNTKLib.SentinelValueForInferParamInitRank, 
-                uint32 1),
+            CNTKLib.XavierInitializer(),
+            //CNTKLib.GlorotUniformInitializer(
+            //    float CNTKLib.DefaultParamInitScale,
+            //    CNTKLib.SentinelValueForInferParamInitRank,
+            //    CNTKLib.SentinelValueForInferParamInitRank, 
+            //    uint32 1),
             device, 
             "timesParam")
 
