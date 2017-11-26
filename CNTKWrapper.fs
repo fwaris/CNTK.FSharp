@@ -39,10 +39,10 @@ type Activation =
     | LeakyReLU
 
 let FullyConnectedLinearLayer(
-    input:Variable, 
-    outputDim:int, 
-    device:DeviceDescriptor,
-    outputName:string) : Function =
+                                input:Variable, 
+                                outputDim:int, 
+                                device:DeviceDescriptor,
+                                outputName:string) : Function =
 
     let inputDim = input.Shape.[0]
 
@@ -50,11 +50,12 @@ let FullyConnectedLinearLayer(
         new Parameter(
             shape [outputDim; inputDim], 
             DataType.Float,
-            C.GlorotUniformInitializer(
-                float C.DefaultParamInitScale,
-                C.SentinelValueForInferParamInitRank,
-                C.SentinelValueForInferParamInitRank, 
-                uint32 1),
+            CNTKLib.XavierInitializer(),
+            //CNTKLib.GlorotUniformInitializer(
+            //    float CNTKLib.DefaultParamInitScale,
+            //    CNTKLib.SentinelValueForInferParamInitRank,
+            //    CNTKLib.SentinelValueForInferParamInitRank, 
+            //    uint32 1),
             device, 
             "timesParam")
 
@@ -65,11 +66,11 @@ let FullyConnectedLinearLayer(
     C.Plus(plusParam, timesFunction, outputName)
 
 let Dense(
-    input:Variable, 
-    outputDim:int,
-    device:DeviceDescriptor,
-    activation:Activation, 
-    outputName:string) : Function =
+            input:Variable, 
+            outputDim:int,
+            device:DeviceDescriptor,
+            activation:Activation, 
+            outputName:string) : Function =
 
     let input : Variable =
         if (input.Shape.Rank <> 1)

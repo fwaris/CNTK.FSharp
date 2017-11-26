@@ -58,9 +58,9 @@
     </When>
   </Choose>
   <ItemGroup>
+    <Compile Include="ImageUtils.fs" />
     <Compile Include="CNTKWrapper.fs" />
     <None Include="paket.references" />
-    <Compile Include="ImageUtils.fs" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="mscorlib" />

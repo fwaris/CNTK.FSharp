@@ -1,21 +1,20 @@
 // derived from this Python-based tutorial: 
 // https://www.cntk.ai/pythondocs/CNTK_206A_Basic_GAN.html
+
+#load "../CNTK.fsx"
+#load "../Probability.fs"
+//#load "MNIST-CNN.fsx"
+#load "../CNTKWrapper.fs"
+#load "../ImageUtils.fs"
+
 open System
 open System.IO
 open System.Collections.Generic
 
-#load "../CNTK.fsx"
-#load "../Probability.fs"
-#load "MNIST-CNN.fsx"
 open CNTK
-
-module M = ``MNIST-CNN``
+open CNTKWrapper
 type C = CNTKLib
-
-let dvc = DeviceDescriptor.GPUDevice(0)
-
-//utility operator for F# implicit conversions 
-let inline (!>) (x:^a) : ^b = ((^a or ^b) : (static member op_Implicit : ^a -> ^b) x)
+open ImageUtils
 
 let g_input_dim = 100
 let g_hidden_dim = 128
@@ -30,7 +29,6 @@ let lr = 0.00005
 
 let featureStreamName = "features"
 let labelsStreamName = "labels"
-let classifierName = "classifierOutput"
 let imageSize = 28 * 28
 let numClasses = 10
 
@@ -60,39 +58,20 @@ let uniform_sample size =
 
 let noise_sample num_samples =
     let vals = uniform_sample  (num_samples * g_input_dim)
-    let inp = Value.CreateBatch(shape [g_input_dim], vals, dvc)
+    let inp = Value.CreateBatch(shape [g_input_dim], vals, gpu)
     new MinibatchData(inp,uint32 minibatch_size)
 
 let generator z =
-    let h1 = M.Dense(z,g_hidden_dim,dvc,Activation.ReLU,"h1")
-    M.Dense(new Variable(h1),g_output_dim,dvc,Activation.Tanh,"outG")
+    let h1 = Dense(z,g_hidden_dim,gpu,Activation.ReLU,"h1")
+    Dense(new Variable(h1),g_output_dim,gpu,Activation.Tanh,"outG")
 
 let discriminator x =
-    let h1 = M.Dense(x,d_hidden_dim,dvc,Activation.ReLU,"h1")
-    M.Dense(new Variable(h1),d_output_dim,dvc,Activation.Sigmoid,"outD")
+    let h1 = Dense(x,d_hidden_dim,gpu,Activation.ReLU,"h1")
+    Dense(new Variable(h1),d_output_dim,gpu,Activation.Sigmoid,"outD")
 
 let dt = DataType.Float //default data type
 let scalar x = Constant.Scalar(dt,x)
 
-let inline idict (s:(^a * ^b) seq) =
-    let d = new System.Collections.Generic.Dictionary< ^a, ^b>()
-    s |> Seq.iter d.Add
-    d
-
-let parmVector (ps:Parameter seq) = 
-    let pv = new ParameterVector(Seq.length ps)
-    ps |>  Seq.iter pv.Add
-    pv
-
-let lrnVector (ls:Learner seq) =
-    let lv = new LearnerVector(Seq.length ls)
-    ls |>  Seq.iter lv.Add
-    lv
-
-let prgwVector (pws:ProgressWriter seq) =
-    let pwv = new ProgressWriterVector(Seq.length pws)
-    pws |>  Seq.iter pwv.Add
-    pwv
 
 let build_graph noise_shape image_shape g_progress_printer d_progress_printer =
     let input_dynamic_axes = new AxisVector([|Axis.DefaultBatchAxis()|])
@@ -166,12 +145,12 @@ let train (reader_train:MinibatchSource) =
                             X_real, X_data.[featureStreamInfo]
                             Z     , Z_data
                         ]
-                D_trainer.TrainMinibatch(batch_inputs,dvc) |> ignore
+                D_trainer.TrainMinibatch(batch_inputs,gpu) |> ignore
 
         //train generator
         let Z_data = noise_sample (int minibatch_size)
         let batch_inputs = idict [Z, Z_data]
-        let b = G_trainer.TrainMinibatch(batch_inputs,dvc) //|> ignore
+        let b = G_trainer.TrainMinibatch(batch_inputs,gpu) //|> ignore
         if train_step % 100 = 0 then
             let l_D = D_trainer.PreviousMinibatchLossAverage()
             let l_G = G_trainer.PreviousMinibatchLossAverage()
@@ -189,11 +168,8 @@ G_output.Save(Path.Combine(@"D:\repodata\fscntk","Generator.bin"))
 
 let noise = noise_sample 36
 let outMap = idict[G_output.Output,(null:Value)]
-G_output.Evaluate(idict[G_input,noise.data],outMap,dvc)
+G_output.Evaluate(idict[G_input,noise.data],outMap,gpu)
 let imgs = outMap.[G_output.Output].GetDenseData<float32>(G_output.Output)
-
-#load "..\ImageUtils.fs"
-open ImageUtils
 
 let sMin,sMax = Seq.collect (fun x->x) imgs |> Seq.min, Seq.collect (fun x->x) imgs |> Seq.max
 let grays = 
