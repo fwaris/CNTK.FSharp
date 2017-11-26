@@ -11,11 +11,18 @@ open System.Collections.Generic
 Environment.SetEnvironmentVariable("Path",
     Environment.GetEnvironmentVariable("Path") + ";" + __SOURCE_DIRECTORY__)
 
+//let dependencies = [
+//        "./packages/CNTK.CPUOnly/lib/net45/x64/"
+//        "./packages/CNTK.CPUOnly/support/x64/Dependency/"
+//        "./packages/CNTK.CPUOnly/support/x64/Dependency/Release/"
+//        "./packages/CNTK.CPUOnly/support/x64/Release/"    
+//    ]
+
 let dependencies = [
-        "./packages/CNTK.CPUOnly/lib/net45/x64/"
-        "./packages/CNTK.CPUOnly/support/x64/Dependency/"
-        "./packages/CNTK.CPUOnly/support/x64/Dependency/Release/"
-        "./packages/CNTK.CPUOnly/support/x64/Release/"    
+        "./packages/CNTK.GPU/lib/net45/x64/"
+        "./packages/CNTK.GPU/support/x64/Dependency/"
+        "./packages/CNTK.GPU/support/x64/Dependency/Release/"
+        "./packages/CNTK.GPU/support/x64/Release/"    
     ]
 
 dependencies 
@@ -25,12 +32,12 @@ dependencies
         Environment.GetEnvironmentVariable("Path") + ";" + path)
     )    
 
-#I "./packages/CNTK.CPUOnly/lib/net45/x64/"
-#I "./packages/CNTK.CPUOnly/support/x64/Dependency/"
-#I "./packages/CNTK.CPUOnly/support/x64/Dependency/Release/"
-#I "./packages/CNTK.CPUOnly/support/x64/Release/"
+#I "./packages/CNTK.GPU/lib/net45/x64/"
+#I "./packages/CNTK.GPU/support/x64/Dependency/"
+#I "./packages/CNTK.GPU/support/x64/Dependency/Release/"
+#I "./packages/CNTK.GPU/support/x64/Release/"
 
-#r "./packages/CNTK.CPUOnly/lib/net45/x64/Cntk.Core.Managed-2.2.dll"
+#r "./packages/CNTK.GPU/lib/net45/x64/Cntk.Core.Managed-2.2.dll"
 open CNTK
 
 // utilities

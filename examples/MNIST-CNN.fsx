@@ -241,6 +241,7 @@ let learn epochs =
                     input, minibatchData.[featureStreamInfo]
                     labels, minibatchData.[labelStreamInfo]
                 ]
+
                 |> dict
 
             trainer.TrainMinibatch(arguments, device) |> ignore
