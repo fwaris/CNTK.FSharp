@@ -1,5 +1,5 @@
 // derived from this Python-based tutorial: 
-// https://www.cntk.ai/pythondocs/CNTK_206B_DCGAN.html
+// https://www.cntk.ai/pythondocs/CNTK_206A_Basic_GAN.html
 
 #load "../CNTK.fsx"
 #load "../Probability.fs"
@@ -16,21 +16,25 @@ open CNTKWrapper
 type C = CNTKLib
 open ImageUtils
 
-let g_input_dim = 100
-let g_hidden_dim = 128
-let g_output_dim = 784
-let d_input_dim = g_output_dim
-let d_hidden_dim = 128
-let d_output_dim = 1
-let isFast = false
-let minibatch_size = 1024u
-let num_minibatches = if isFast then 300 else 40000
-let lr = 0.00005
-
 let featureStreamName = "features"
 let labelsStreamName = "labels"
 let imageSize = 28 * 28
 let numClasses = 10
+
+let img_h, img_w = 28, 28
+let kernel_h, kernel_w = 5, 5
+let stride_h, stride_w = 2, 2
+
+let g_input_dim = 100
+let g_output_dim = img_h * img_w
+let d_input_dim = g_output_dim
+
+let d_hidden_dim = 128
+let d_output_dim = 1
+let isFast = true
+let minibatch_size = 1024u
+let num_minibatches = if isFast then 300 else 40000
+let lr = 0.00005
 
 let streamConfigurations = 
     ResizeArray<StreamConfiguration>(
@@ -61,6 +65,42 @@ let noise_sample num_samples =
     let inp = Value.CreateBatch(shape [g_input_dim], vals, gpu)
     new MinibatchData(inp,uint32 minibatch_size)
 
+// the strides to be of the same length along each data dimension
+let gkernel,dkernel =
+    if kernel_h = kernel_w then
+        kernel_h,kernel_h
+    else
+        failwith "This tutorial needs square shaped kernel"
+
+let gstride,dstride =
+    if stride_h = stride_w then
+       stride_h, stride_h
+    else
+        failwith "This tutorial needs same stride in all dims"
+
+
+// Helper functions  
+let bn (x:Variable) = 
+    let outFeatureMapCount = x.Shape.[0]                                //equivalent to map_rank=1 in Python API?
+    let b = new Parameter(shape [outFeatureMapCount], 0.f, gpu, "")
+    let sc = new Parameter(shape [outFeatureMapCount], 1.f, gpu, "")
+    let m = new Constant(shape [outFeatureMapCount], 0.0f, gpu)
+    let v = new Constant(shape [outFeatureMapCount], 0.0f, gpu)
+    let n = scalar 0.
+    C.BatchNormalization(x,sc,b,m,v,n,true,5000.,0.,0.00001,true)
+
+let bn_with_relu (x:Variable) =
+    let bn = bn x
+    C.ReLU !>bn
+
+//use PReLU function to use a leak=0.2 since CNTK implementation
+// of Leaky ReLU is fixed to 0.01
+let bn_with_leaky_relu x =
+    let bn = bn x
+    let alpha = new Constant(bn.Output.Shape, dataType, 0.2)
+    C.PReLU(alpha, !> bn)
+    
+
 let generator z =
     let h1 = Dense(z,g_hidden_dim,gpu,Activation.ReLU,"h1")
     Dense(new Variable(h1),g_output_dim,gpu,Activation.Tanh,"outG")
@@ -77,7 +117,7 @@ let build_graph noise_shape image_shape g_progress_printer d_progress_printer =
     let input_dynamic_axes = new AxisVector([|Axis.DefaultBatchAxis()|])
     let Z = C.InputVariable(noise_shape,dt,input_dynamic_axes)
     let X_real = C.InputVariable(image_shape,dt,input_dynamic_axes)
-    let X_real_scaled = C.Minus(!> C.ElementTimes(X_real, scalar (2.0/255.0)),scalar 1.0)
+    let X_real_scaled = C.Minus(!> C.ElementTimes(X_real, scalar (2.0/1.0)),scalar 1.0)
 
     //generator & discriminator 
     let X_fake = generator Z
@@ -174,8 +214,8 @@ let imgs = outMap.[G_output.Output].GetDenseData<float32>(G_output.Output)
 let sMin,sMax = Seq.collect (fun x->x) imgs |> Seq.min, Seq.collect (fun x->x) imgs |> Seq.max
 let grays = 
     imgs
-    |> Seq.map (Seq.map (fun x-> if x < 0.f then 0uy else 255uy)>>Seq.toArray)
-    //|> Seq.map (Seq.map (fun x -> scaler (0.,255.) (float sMin, float sMax) (float x) |> byte) >> Seq.toArray)
+    //|> Seq.map (Seq.map (fun x-> if x < 0.f then 0uy else 255uy)>>Seq.toArray)
+    |> Seq.map (Seq.map (fun x -> scaler (0.,255.) (float sMin, float sMax) (float x) |> byte) >> Seq.toArray)
     |> Seq.map (ImageUtils.toGray (28,28))
     |> Seq.toArray
 
