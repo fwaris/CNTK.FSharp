@@ -26,9 +26,10 @@ let kernel_h, kernel_w = 5, 5
 let stride_h, stride_w = 2, 2
 
 let g_input_dim = 100
+let g_hidden_dim = 128
 let g_output_dim = img_h * img_w
-let d_input_dim = g_output_dim
 
+let d_input_dim = g_output_dim
 let d_hidden_dim = 128
 let d_output_dim = 1
 let isFast = true
@@ -100,6 +101,24 @@ let bn_with_leaky_relu x =
     let alpha = new Constant(bn.Output.Shape, dataType, 0.2)
     C.PReLU(alpha, !> bn)
     
+let convolutional_generator (z:Variable) =
+    let defaultInit() = C.NormalInitializer(0.2)
+    printfn "generator input shape: %A" z.Shape
+    let s_h2, s_w2 = img_h / 2, img_w / 2 //Input shape (14,14)
+    let s_h4, s_w4 = img_h / 4, img_w / 4 //Input shape (7,7)
+    let gfc_dim = 1024
+    let gf_dim = 64
+
+    let h0 = Dense(z, shape [gfc_dim], gpu, defaultInit(), Activation.None, "h0")
+    let h0:Variable = !> (bn_with_relu !> h0)
+    printfn "h0 shape: %A"  h0.Shape
+
+    let h1 = Dense(h0, shape [gf_dim], gpu, defaultInit(), Activation.None, "h1")
+    let h1:Variable = !> (bn_with_relu !> h1)
+    printfn "h1 shape: %A"  h1.Shape
+
+    C.ConvolutionTranspose(h1,
+
 
 let generator z =
     let h1 = Dense(z,g_hidden_dim,gpu,Activation.ReLU,"h1")
@@ -108,10 +127,6 @@ let generator z =
 let discriminator x =
     let h1 = Dense(x,d_hidden_dim,gpu,Activation.ReLU,"h1")
     Dense(new Variable(h1),d_output_dim,gpu,Activation.Sigmoid,"outD")
-
-let dt = DataType.Float //default data type
-let scalar x = Constant.Scalar(dt,x)
-
 
 let build_graph noise_shape image_shape g_progress_printer d_progress_printer =
     let input_dynamic_axes = new AxisVector([|Axis.DefaultBatchAxis()|])
