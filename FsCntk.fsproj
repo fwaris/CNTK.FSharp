@@ -59,7 +59,9 @@
   </Choose>
   <ItemGroup>
     <Compile Include="ImageUtils.fs" />
-    <Compile Include="CNTKWrapper.fs" />
+    <Compile Include="FsBase.fs" />
+    <Compile Include="Blocks.fs" />
+    <Compile Include="Layers.fs" />
     <None Include="paket.references" />
   </ItemGroup>
   <ItemGroup>
