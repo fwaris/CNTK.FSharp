@@ -4,7 +4,9 @@
 #load "../CNTK.fsx"
 #load "../Probability.fs"
 //#load "MNIST-CNN.fsx"
-#load "../CNTKWrapper.fs"
+#load "../FsBase.fs"
+#load "../Blocks.fs"
+#load "../Layers.fs"
 #load "../ImageUtils.fs"
 
 open System
@@ -12,9 +14,12 @@ open System.IO
 open System.Collections.Generic
 
 open CNTK
-open CNTKWrapper
+open CNTKWrapper.FsBase
+open CNTKWrapper.Blocks
+open CNTKWrapper.Layers
 type C = CNTKLib
 open ImageUtils
+
 
 let featureStreamName = "features"
 let labelsStreamName = "labels"
@@ -63,7 +68,7 @@ let uniform_sample size =
 
 let noise_sample num_samples =
     let vals = uniform_sample  (num_samples * g_input_dim)
-    let inp = Value.CreateBatch(shape [g_input_dim], vals, gpu)
+    let inp = Value.CreateBatch(shape [g_input_dim], vals, device)
     new MinibatchData(inp,uint32 minibatch_size)
 
 // the strides to be of the same length along each data dimension
@@ -79,27 +84,16 @@ let gstride,dstride =
     else
         failwith "This tutorial needs same stride in all dims"
 
-
 // Helper functions  
-let bn (x:Variable) = 
-    let outFeatureMapCount = x.Shape.[0]                                //equivalent to map_rank=1 in Python API?
-    let b = new Parameter(shape [outFeatureMapCount], 0.f, gpu, "")
-    let sc = new Parameter(shape [outFeatureMapCount], 1.f, gpu, "")
-    let m = new Constant(shape [outFeatureMapCount], 0.0f, gpu)
-    let v = new Constant(shape [outFeatureMapCount], 0.0f, gpu)
-    let n = scalar 0.
-    C.BatchNormalization(x,sc,b,m,v,n,true,5000.,0.,0.00001,true)
-
 let bn_with_relu (x:Variable) =
-    let bn = bn x
-    C.ReLU !>bn
+    let h = L.BatchNormalization(x,map_rank=1)
+    L.activation h Activation.ReLU
 
 //use PReLU function to use a leak=0.2 since CNTK implementation
 // of Leaky ReLU is fixed to 0.01
 let bn_with_leaky_relu x =
-    let bn = bn x
-    let alpha = new Constant(bn.Output.Shape, dataType, 0.2)
-    C.PReLU(alpha, !> bn)
+    let h = L.BatchNormalization(x,map_rank=1)
+    Activation.PReLU 0.2 |> L.activation h 
     
 let convolutional_generator (z:Variable) =
     let defaultInit() = C.NormalInitializer(0.2)
@@ -109,24 +103,58 @@ let convolutional_generator (z:Variable) =
     let gfc_dim = 1024
     let gf_dim = 64
 
-    let h0 = Dense(z, shape [gfc_dim], gpu, defaultInit(), Activation.None, "h0")
+    let h0 = L.Dense(z, Ds [gfc_dim], device, defaultInit(), Activation.NONE, "h0")
     let h0:Variable = !> (bn_with_relu !> h0)
     printfn "h0 shape: %A"  h0.Shape
 
-    let h1 = Dense(h0, shape [gf_dim], gpu, defaultInit(), Activation.None, "h1")
+    let h1 = L.Dense(h0, Ds [gf_dim], device, defaultInit(), Activation.NONE, "h1")
     let h1:Variable = !> (bn_with_relu !> h1)
     printfn "h1 shape: %A"  h1.Shape
 
-    C.ConvolutionTranspose(h1,
+    let h2 = L.ConvolutionTranspose2D(
+                h1,
+                D gkernel,
+                num_filters=gf_dim*2,
+                strides=D gstride,
+                pad=true,
+                output_shape=Ds[s_h2; s_w2],
+                activation=Activation.NONE)
+    let h2:Variable = !> (bn_with_relu !>h2)
+    printfn "h2 shape %A" h2.Shape
+
+    let h3:Variable = 
+        !> L.ConvolutionTranspose2D(
+                h2,
+                D gkernel,
+                num_filters=1,
+                strides=D gstride,
+                pad=true,
+                output_shape=Ds[img_h; img_w],
+                activation=Activation.Sigmoid)
+    printfn "h3 shape: %A" h3.Shape
+
+    C.Reshape(h3, !- (D img_h * img_w))
+
+
+let convolutional_discriminator (x:Variable) =
+    let dfc_dim = 1024
+    let df_dim = 64
+    printfn "Discriminator convolution shape %A" x.Shape
+    let x = C.Reshape(x, !- (Ds [1, img_h, img_w]))
+
+    let h0 = L.con
+
+    
+    
 
 
 let generator z =
-    let h1 = Dense(z,g_hidden_dim,gpu,Activation.ReLU,"h1")
-    Dense(new Variable(h1),g_output_dim,gpu,Activation.Tanh,"outG")
+    let h1 = Dense(z,g_hidden_dim,device,Activation.ReLU,"h1")
+    Dense(new Variable(h1),g_output_dim,device,Activation.Tanh,"outG")
 
 let discriminator x =
-    let h1 = Dense(x,d_hidden_dim,gpu,Activation.ReLU,"h1")
-    Dense(new Variable(h1),d_output_dim,gpu,Activation.Sigmoid,"outD")
+    let h1 = Dense(x,d_hidden_dim,device,Activation.ReLU,"h1")
+    Dense(new Variable(h1),d_output_dim,device,Activation.Sigmoid,"outD")
 
 let build_graph noise_shape image_shape g_progress_printer d_progress_printer =
     let input_dynamic_axes = new AxisVector([|Axis.DefaultBatchAxis()|])
@@ -200,12 +228,12 @@ let train (reader_train:MinibatchSource) =
                             X_real, X_data.[featureStreamInfo]
                             Z     , Z_data
                         ]
-                D_trainer.TrainMinibatch(batch_inputs,gpu) |> ignore
+                D_trainer.TrainMinibatch(batch_inputs,device) |> ignore
 
         //train generator
         let Z_data = noise_sample (int minibatch_size)
         let batch_inputs = idict [Z, Z_data]
-        let b = G_trainer.TrainMinibatch(batch_inputs,gpu) //|> ignore
+        let b = G_trainer.TrainMinibatch(batch_inputs,device) //|> ignore
         if train_step % 100 = 0 then
             let l_D = D_trainer.PreviousMinibatchLossAverage()
             let l_G = G_trainer.PreviousMinibatchLossAverage()
@@ -223,7 +251,7 @@ G_output.Save(Path.Combine(@"D:\repodata\fscntk","Generator.bin"))
 
 let noise = noise_sample 36
 let outMap = idict[G_output.Output,(null:Value)]
-G_output.Evaluate(idict[G_input,noise.data],outMap,gpu)
+G_output.Evaluate(idict[G_input,noise.data],outMap,device)
 let imgs = outMap.[G_output.Output].GetDenseData<float32>(G_output.Output)
 
 let sMin,sMax = Seq.collect (fun x->x) imgs |> Seq.min, Seq.collect (fun x->x) imgs |> Seq.max

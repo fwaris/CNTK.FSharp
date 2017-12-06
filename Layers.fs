@@ -1,15 +1,18 @@
 ﻿namespace CNTKWrapper
 open CNTK
 open System
-type C = CNTKLib
 open Blocks
 open FsBase
+
 //based on python layers module (see CNTK Python API for documentation)
+//mimics python code closely
 
 module Layers =
 
     let dataType = DataType.Float           //default data type  TODO: make configurable
-    let gpu = DeviceDescriptor.GPUDevice(0) //default device
+    let device = DeviceDescriptor.GPUDevice(0) //default device
+
+    let private (!!) (v:Option<_>) = v |> Option.defaultValue null
 
     let scalar x = Constant.Scalar(dataType,x)
     let shape (dims:int seq) = NDShape.CreateNDShape dims
@@ -39,24 +42,35 @@ module Layers =
         pws |>  Seq.iter pwv.Add
         pwv
 
+    let varVector (vs:Variable seq) =
+        let vv = new VariableVector(Seq.length vs)
+        vs |>  Seq.iter vv.Add
+        vv
+
+    let intVector (is:int seq) =
+        let vs = new IntVector(Seq.length is)
+        is |>  Seq.iter vs.Add
+        vs
+
     type Activation = 
         | NONE
         | ReLU
         | Sigmoid
         | Tanh
         | LeakyReLU
+        | PReLU of float
 
     let inline asList sz x  = [for _ in 1 .. sz -> x]
 
     //usually, much shape manipulation is done - so a separate type
-    type Shape = D of int | Ds of int list
+    type Shape = D (*size of dimension*) of int | Ds of int list | Unspecified 
 
     let fromNDShape (s:NDShape) = s.Dimensions |> Seq.toList |> Ds
     let ( !+ ) (s:NDShape) = fromNDShape s
-    let toNDShape = function D i -> shape [i] | Ds ds -> shape ds
+    let toNDShape = function D i -> shape [i] | Ds ds -> shape ds | Unspecified -> null
     let ( !- ) s = toNDShape s
-    let dims = function D i -> [i] | Ds is -> is
-    let len = function D i -> 1 | Ds is -> List.length is
+    let dims = function D i -> [i] | Ds is -> is | Unspecified -> failwith "unspecified shape"
+    let len = function D i -> 1 | Ds is -> List.length is | Unspecified -> 0
 
     //Shape operations
     type Shape with 
@@ -66,16 +80,20 @@ module Layers =
             | D i, Ds js -> List.append js [i] |> Ds
             | Ds is, D j -> List.append is [j] |> Ds
             | Ds is, Ds js -> List.append is js |> Ds
+            | Unspecified,_ 
+            | _, Unspecified -> failwith "unspecified shape"
 
         static member ( + ) (s1:Shape,d:int) =
             match s1 with
             | D i   -> Ds [i; d]
             | Ds is -> List.append is [d] |> Ds
+            | Unspecified -> failwith "unspecified shape"
 
         static member ( * )  (x:Shape, repeat:int) =
             match x with
             | D i -> Ds [for _ in 1 .. repeat -> i]
             | Ds is -> List.collect yourself [for _ in 1 .. repeat -> is] |> Ds
+            | Unspecified -> failwith "unspecified shape"
 
         member x.padTo (s2:Shape) =
             match x,s2 with
@@ -93,6 +111,271 @@ module Layers =
             | Activation.LeakyReLU  -> C.LeakyReLU  !>v
             | Activation.Sigmoid    -> C.Sigmoid    !>v
             | Activation.Tanh       -> C.Tanh       !>v
+            | Activation.PReLU c    -> let alpha = new Constant(v.Output.Shape, dataType, c)
+                                       C.PReLU(!>v, alpha)
+
+        static member private _window (x:Variable, axis, _begin, _end, step, stride, ?initial_state) = 
+            if stride <> 1 then failwith "windowed convolution with stride not yet implemented"
+            let initial_state = initial_state |> Option.defaultValue null
+            let shifted =
+                [|
+                    for t in _begin .. step .. _end do
+                        yield 
+                            match t with
+                            | 0             -> x
+                            | t when t < 0 -> !> C.PastValue(x,initial_state, uint32 -t)
+                            | t            -> !> C.FutureValue(x,initial_state,uint32 t)
+                |]
+            C.Splice(varVector shifted, axis)
+                                 
+        static member Convolution
+            (
+                convVar: Variable,
+                filter_shape,
+                ?num_filters,
+                ?sequential,
+                ?activation,
+                ?init,
+                ?pad,
+                ?strides,
+                ?sharing,
+                ?bias,
+                ?init_bias,
+                ?reduction_rank,
+                ?transpose_weight,
+                ?dialation,
+                ?max_temp_mem_size_in_samples,
+                ?op_name,
+                ?name
+            ) =
+            let num_filters = num_filters |> Option.defaultValue 0
+            let sequential = sequential |> Option.defaultValue false
+            let activation = activation |> Option.defaultValue Activation.NONE
+            let init = init |> Option.defaultValue (C.GlorotUniformInitializer())
+            let pad = pad |> Option.defaultValue false
+            let strides = strides |> Option.defaultValue (D 1)
+            let sharing = sharing |> Option.defaultValue true
+            let bias = bias |> Option.defaultValue true
+            let init_bias = init_bias |> Option.defaultValue 0.
+            let reduction_rank = reduction_rank |> Option.defaultValue 1
+            let transpose_weight = transpose_weight |> Option.defaultValue false
+            let dialation = dialation |> Option.defaultValue (D 1)
+            let max_temp_mem_size_in_samples = max_temp_mem_size_in_samples |> Option.defaultValue 0
+            let op_name = op_name |> Option.defaultValue "Convolution"
+            let name = name |> Option.defaultValue ""
+
+            if [0;1] |> List.contains reduction_rank |> not then
+                failwith "Convolution: reduction_rank must be 0 or 1"
+            if transpose_weight then
+                failwith "Convolution: transpose_weight option currently not supported"
+            if not sharing then
+                failwith "Convolution: sharing option currently must be True"
+
+            let num_filters = if num_filters = 0 then Ds [] else D num_filters
+            let filter_rank = len filter_shape
+            let strides = strides .padTo filter_shape
+            let sharing = asList filter_rank sharing 
+            let pad     = asList filter_rank pad
+            let dialation = dialation .padTo filter_shape
+
+            let emulating_output_depth = len num_filters = 0
+            let emulating_input_depth = reduction_rank = 0
+
+            let actual_output_channels_shape = 
+                if not emulating_output_depth then
+                    num_filters
+                else
+                    D 1
+
+            let actual_reduction_shape = D NDShape.InferredDimension 
+            let actual_filter_shape = filter_shape
+
+            let num_emulated_axes = if emulating_input_depth then 1 else 0
+            let strides = (D 1) * num_emulated_axes + strides
+            let sharing = asList num_emulated_axes true @ sharing
+            let pad = asList num_emulated_axes false @ pad
+
+            let kernel_shape = actual_reduction_shape + actual_filter_shape
+
+            //simplified version of python code which I
+            //don't fully understand yet
+            let init_kernel = B._initializer_with_rank(
+                                init,
+                                filter_rank = filter_rank,
+                                output_rank = -len(actual_output_channels_shape)
+                                )
+
+            let W = new Parameter(
+                        !-(actual_output_channels_shape + kernel_shape),
+                        dataType,
+                        init_kernel,
+                        device,
+                        "W")
+
+            let b = if bias then
+                        new Parameter(
+                            !-(actual_output_channels_shape + (D 1) * len(actual_filter_shape)),
+                            dataType,
+                            init_bias,
+                            device,
+                            "b")
+                        else
+                            null
+            
+            let filter_rank_without_seq = if sequential then filter_rank - 1 else filter_rank
+            let num_inserted_axes = if sequential then 1 + num_emulated_axes else num_emulated_axes
+
+            let beginAxis = 
+                if filter_rank_without_seq <> 0 then 
+                    new Axis(-filter_rank_without_seq)
+                else
+                    Axis.EndStaticAxis() //python code's Axis.new_leading_axis() resolves to this
+
+            let endAxis = 
+                if filter_rank_without_seq <> 0 then
+                    new Axis(-filter_rank_without_seq)
+                else
+                    null
+
+            let x = 
+                if num_inserted_axes <> 0 then
+                    C.Reshape (
+                        convVar, 
+                        (D 1) * num_inserted_axes |> toNDShape,
+                        beginAxis,
+                        endAxis
+                        )
+                else
+                    !> convVar
+
+            let rank1 = (dims filter_shape |> List.rev).[filter_rank-1] //filter_shape[-filter_rank] in python
+            let lpad = (rank1 - 1) / 2
+            let x = 
+                if sequential then
+                    let stride1 = (dims strides |> List.rev).[filter_rank-1]
+                    L._window(!>x,new Axis(-filter_rank),-lpad,-lpad+rank1,1,stride1)
+                else
+                    x
+
+            let sequential_emulated_axis = if sequential then pad.Length - filter_rank |> Some else None
+            let isEmulated n = match sequential_emulated_axis with Some y -> y = n | None -> false
+            let autoPadding =  
+                asList reduction_rank false 
+                @ 
+                (pad |> List.mapi (fun i p -> if isEmulated i |> not then p else false))
+
+            let r = C.Convolution(
+                        W,
+                        !>x,
+                        !-strides,
+                        boolVector sharing,
+                        boolVector autoPadding,
+                        !-dialation,
+                        uint32 reduction_rank,
+                        uint32 max_temp_mem_size_in_samples,
+                        "convolution")
+            
+            let zeroPad = (pad |> List.rev).[filter_rank - 1] 
+            let r = 
+                let begin_index = intVector [lpad]
+                let end_index = intVector[-(rank1-1-lpad)]
+                if sequential && not zeroPad then
+                    C.Slice(!>r, null, begin_index , end_index)
+                else
+                    r
+
+            let r = if bias then C.Plus(!>r,b) else r
+
+            let num_axes_to_remove = [sequential; emulating_output_depth] |> List.map (function true -> 1 | false -> 0) |> List.sum
+            let r = 
+                if num_axes_to_remove > 0 then
+                    let begin_axis = new Axis(-filter_rank_without_seq - num_axes_to_remove)
+                    let end_axis = if filter_rank_without_seq <> 0 then new Axis(-filter_rank_without_seq) else null
+                    C.Reshape(!>r, !- (Ds []),  begin_axis, end_axis)
+                else
+                    r
+            let r = L.activation r activation
+
+            r
+
+        static member Convolution
+            (
+                convVar: Variable,
+                filter_shape,
+                ?num_filters,
+                ?activation,
+                ?init,
+                ?pad,
+                ?strides,
+                ?bias,
+                ?init_bias,
+                ?reduction_rank,
+                ?dialation,
+                ?name
+            ) =
+                if len(filter_shape) > 2 then failwith "Convolution2D: filter_shape must be a scalar or a 2D tuple, e.g. 3 or (3,3)"
+                let filter_shape = filter_shape .padTo (Ds [0;0])
+                L.Convolution(
+                    convVar,
+                    filter_shape,
+                    !!num_filters,
+                    !!activation,
+                    !!init,
+                    !!pad,
+                    !!strides,
+                    !!bias,
+                    !!init_bias,
+                    !!reduction_rank,
+                    !!dialation,
+                    !!name)
+
+        static member BatchNormalization
+            (
+                x: Variable,
+                ?map_rank,
+                ?init_scale,
+                ?normalization_time_constant,
+                ?blend_time_constant,
+                ?epsilon,
+                ?use_cntk_engine,
+                ?disable_regularization,
+                ?name
+            ) = 
+
+            let map_rank =
+                match map_rank with
+                | None   -> 0
+                | Some 1 -> 1
+                | Some x -> failwith "map_rank can only be null or 1 for now"
+
+            let normalization_time_constant = normalization_time_constant |> Option.defaultValue 5000
+            let blend_time_constant         = blend_time_constant |> Option.defaultValue 0
+            let epsilon                     = epsilon |> Option.defaultValue 0.00001
+            let use_cntk_engine             = use_cntk_engine |> Option.defaultValue false
+            let init_scale                  = init_scale |> Option.defaultValue 1.0
+
+            let norm_shape = !- (D NDShape.InferredDimension)
+
+            let scale        = new Parameter(norm_shape, dataType, init_scale, device, "scale")
+            let bias         = new Parameter(norm_shape, dataType, 0., device, "bias")
+            let run_mean     = new Constant( norm_shape, dataType, 0., device, "aggregate_mean")
+            let run_variance = new Constant( norm_shape, dataType, 0., device, "aggregate_variance")
+            let run_count    = new Constant( !-(Ds []) , dataType, 0., device, "aggregate_count")
+
+            C.BatchNormalization(
+                x,
+                scale,
+                bias,
+                run_mean,
+                run_variance,
+                run_count,
+                (map_rank = 1),
+                float normalization_time_constant,
+                float blend_time_constant,
+                epsilon,
+                not use_cntk_engine,
+                name = "batch_normalization"
+            )
 
         static member FullyConnectedLinearLayer
             (
@@ -202,20 +485,20 @@ module Layers =
 
             let output_full_shape = 
                 match output_shape with
-                | None -> output_channels_shape
+                | None | Some Shape.Unspecified -> output_channels_shape
                 | Some (osp:Shape) -> output_channels_shape + osp
 
             let filter_rank = len filter_shape
             let init_kernel = B._initializer_with_rank (init, filter_rank = filter_rank, output_rank = -1)
 
-            let W = new Parameter(!-kernel_shape, dataType, init_kernel,gpu,"W")
+            let W = new Parameter(!-kernel_shape, dataType, init_kernel,device,"W")
             let b = 
                 if bias then
                     new Parameter (
                         (output_channels_shape + 1) * filter_rank |> toNDShape, 
                          dataType, 
                          init_bias,
-                         gpu,
+                         device,
                          "b")
                      |> Some
                 else
@@ -297,36 +580,18 @@ module Layers =
 
             let filter_shape = filter_shape .padTo (Ds [0;0])
 
-            match output_shape with
-            | None ->
-                L.ConvolutionTranspose(
-                    convVar,
-                    filter_shape,
-                    num_filters,
-                    activation,
-                    init,
-                    pad,
-                    strides,
-                    true,
-                    bias,
-                    init_bias,
-                    //output_shape=osp,
-                    reduction_rank=reduction_rank,
-                    dialation=dialation,
-                    name=name)
-            | Some osp -> 
-                L.ConvolutionTranspose(
-                    convVar,
-                    filter_shape,
-                    num_filters,
-                    activation,
-                    init,
-                    pad,
-                    strides,
-                    true,
-                    bias,
-                    init_bias,
-                    output_shape=osp,
-                    reduction_rank=reduction_rank,
-                    dialation=dialation,
-                    name=name)
+            L.ConvolutionTranspose(
+                convVar,
+                filter_shape,
+                num_filters,
+                activation,
+                init,
+                pad,
+                strides,
+                true,
+                bias,
+                init_bias,
+                (match output_shape with None -> Shape.Unspecified | Some s -> s),
+                reduction_rank=reduction_rank,
+                dialation=dialation,
+                name=name)

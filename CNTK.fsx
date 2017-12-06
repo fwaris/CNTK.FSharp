@@ -52,11 +52,11 @@ let dataMap xs =
     let dict = Dictionary<Variable,Value>()
     xs |> Seq.fold (fun dict (var,value) -> dictAdd (var,value) dict) dict
 
-type Activation = 
-    | None
-    | ReLU
-    | Sigmoid
-    | Tanh
+//type Activation = 
+//    | None
+//    | ReLU
+//    | Sigmoid
+//    | Tanh
 
 
 type TrainingMiniBatchSummary = {

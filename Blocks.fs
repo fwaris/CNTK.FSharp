@@ -1,11 +1,12 @@
 ﻿namespace CNTKWrapper
 open CNTK
 open System
-type C = CNTKLib
+open FsBase
 
 //based on python blocks module (see CNTK Python API for documentation)
 
 module Blocks =
+    type C = CNTKLib
 
     type B =
 
