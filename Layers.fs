@@ -128,8 +128,59 @@ module Layers =
                 |]
             C.Splice(varVector shifted, axis)
 
+        static member FullyConnectedLinearLayer
+            (
+                input:Variable, 
+                outputDim:Shape, 
+                ?init: CNTKDictionary,
+                ?name:string
+            ) : Function =
+
+            let init = defaultArg init (C.GlorotUniformInitializer())
+            let outputName = defaultArg name ""
+
+            let inputDim = input.Shape.[0]
+
+            let timesParam = 
+                let parmShape = 
+                   !- (outputDim  + (D inputDim))
+                new Parameter(
+                    parmShape,
+                    DataType.Float,
+                    init,
+                    device, 
+                    "timesParam")
+
+            let timesFunction = 
+                new Variable(C.Times(timesParam, input, "times"))
+
+            let plusParam = new Parameter( !- outputDim, 0.0f, device, "plusParam")
+            C.Plus(plusParam, timesFunction, outputName)
+
+        static member Dense(
+                            input:Variable, 
+                            outputDim:Shape,
+                            ?init,
+                            ?activation:Activation, 
+                            ?name:string) : Function =
+
+                let init = defaultArg init (C.GlorotUniformInitializer())
+                let activation = defaultArg activation Activation.NONE
+                let outputName = defaultArg name ""
+
+                let input : Variable =
+                    if (input.Shape.Rank <> 1)
+                    then
+                        let newDim = input.Shape.Dimensions |> Seq.reduce(fun d1 d2 -> d1 * d2)
+                        new Variable(C.Reshape(input, shape [ newDim ]))
+                    else input
+
+                let fullyConnected = 
+                    L.FullyConnectedLinearLayer(input, outputDim, init, outputName)
+
+                L.activation fullyConnected activation
         
-        static member Dense 
+        static member Dense2 
             (
                 x : Variable,
                 output_shape,
@@ -159,7 +210,7 @@ module Layers =
             
             let init_weight = B._initializer_with_rank (init, output_rank=output_rank) 
             let W = new Parameter(!-(input_shape + output_shape),dataType,init_weight,device,"W")
-            let b = new Parameter(!-output_shape,dataType,init_bias,device,"b")
+            let b = if bias then new Parameter(!-output_shape,dataType,init_bias,device,"b") else null
 
             let r = C.Times(x,W,uint32 output_rank, infer_input_rank_to_map)
             let r = if bias then C.Plus(!>r,  b ) else r
@@ -415,33 +466,6 @@ module Layers =
                 not use_cntk_engine,
                 name = "batch_normalization"
             )
-
-        static member FullyConnectedLinearLayer
-            (
-                input:Variable, 
-                outputDim:Shape, 
-                init: CNTKDictionary,
-                device:DeviceDescriptor,
-                outputName:string
-            ) : Function =
-
-            let inputDim = input.Shape.[0]
-
-            let timesParam = 
-                let parmShape = 
-                   !- (outputDim  + !+ input.Shape)
-                new Parameter(
-                    parmShape,
-                    DataType.Float,
-                    init,
-                    device, 
-                    "timesParam")
-
-            let timesFunction = 
-                new Variable(C.Times(timesParam, input, "times"))
-
-            let plusParam = new Parameter( !- outputDim, 0.0f, device, "plusParam")
-            C.Plus(plusParam, timesFunction, outputName)
     
         static member ConvolutionTranspose 
             (

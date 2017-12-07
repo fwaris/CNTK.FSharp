@@ -248,9 +248,7 @@ let train (reader_train:MinibatchSource) generator discriminator =
 
     let G_trainer_loss = G_trainer.PreviousMinibatchLossAverage()
     Z, X_fake, G_trainer_loss
-
 (*
-*)
 
 let reader_train = minibatchSource
 
@@ -275,4 +273,22 @@ let grays =
 
 ImageUtils.show grays.[0]
 ImageUtils.showGrid (6,6) grays
+*)
 
+(*
+
+//testing
+let dx = new AxisVector([|Axis.DefaultDynamicAxis()|])
+let x = new Variable(!-(Ds [NDShape.FreeDimension; 4]), VariableKind.Input, dataType, null, true, dx, false, "","1")
+x.Shape
+let w = new Parameter( !- (D NDShape.InferredDimension + D 10), dataType, 0.)
+w.Shape
+let t = C.Times(x,w, 1u)
+t.Output.Shape
+t.Output
+let b = new Parameter( !- (D 10), dataType,0.,device,"b")
+b.Shape
+let m = C.Plus(!>t,b)
+m.Output.Shape
+
+*)
