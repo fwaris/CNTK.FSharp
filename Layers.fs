@@ -12,7 +12,7 @@ module Layers =
     let dataType = DataType.Float           //default data type  TODO: make configurable
     let device = DeviceDescriptor.GPUDevice(0) //default device
 
-    let private (!!) (v:Option<_>) = v |> Option.defaultValue null
+    let inline private (!!) (v:Option<_>) = defaultArg v null
 
     let scalar x = Constant.Scalar(dataType,x)
     let shape (dims:int seq) = NDShape.CreateNDShape dims
@@ -127,6 +127,45 @@ module Layers =
                             | t            -> !> C.FutureValue(x,initial_state,uint32 t)
                 |]
             C.Splice(varVector shifted, axis)
+
+        
+        static member Dense 
+            (
+                x : Variable,
+                output_shape,
+                ?activation,
+                ?init,
+                ?input_rank,
+                ?map_rank,
+                ?bias,
+                ?init_bias,
+                ?name
+            ) =
+            let activation = defaultArg activation Activation.NONE
+            let init = defaultArg init (C.GlorotUniformInitializer())
+            let bias = defaultArg bias true
+            let init_bias = defaultArg init_bias 0.
+            let name = defaultArg  name ""
+
+            let infer_input_rank_to_map =
+                match input_rank,map_rank with
+                | Some _, Some _    -> failwith "Dense: input_rank and map_rank cannot be specified at the same time."
+                | Some _, None      -> -1
+                | _     , None      -> 0
+                | _     , Some r    -> r
+
+            let output_rank = len output_shape
+            let input_shape = D NDShape.InferredDimension * (match input_rank with None -> 1 | Some r -> r)
+            
+            let init_weight = B._initializer_with_rank (init, output_rank=output_rank) 
+            let W = new Parameter(!-(input_shape + output_shape),dataType,init_weight,device,"W")
+            let b = new Parameter(!-output_shape,dataType,init_bias,device,"b")
+
+            let r = C.Times(x,W,uint32 output_rank, infer_input_rank_to_map)
+            let r = if bias then C.Plus(!>r,  b ) else r
+            let r = L.activation r activation
+            r
+
                                  
         static member Convolution
             (
@@ -148,21 +187,21 @@ module Layers =
                 ?op_name,
                 ?name
             ) =
-            let num_filters = num_filters |> Option.defaultValue 0
-            let sequential = sequential |> Option.defaultValue false
-            let activation = activation |> Option.defaultValue Activation.NONE
-            let init = init |> Option.defaultValue (C.GlorotUniformInitializer())
-            let pad = pad |> Option.defaultValue false
-            let strides = strides |> Option.defaultValue (D 1)
-            let sharing = sharing |> Option.defaultValue true
-            let bias = bias |> Option.defaultValue true
-            let init_bias = init_bias |> Option.defaultValue 0.
-            let reduction_rank = reduction_rank |> Option.defaultValue 1
-            let transpose_weight = transpose_weight |> Option.defaultValue false
-            let dialation = dialation |> Option.defaultValue (D 1)
-            let max_temp_mem_size_in_samples = max_temp_mem_size_in_samples |> Option.defaultValue 0
-            let op_name = op_name |> Option.defaultValue "Convolution"
-            let name = name |> Option.defaultValue ""
+            let num_filters = defaultArg num_filters 0
+            let sequential = defaultArg sequential false 
+            let activation = defaultArg activation Activation.NONE
+            let init = defaultArg init (C.GlorotUniformInitializer())
+            let pad = defaultArg pad false
+            let strides = defaultArg strides (D 1)
+            let sharing = defaultArg sharing true
+            let bias = defaultArg bias true
+            let init_bias = defaultArg init_bias 0.
+            let reduction_rank = defaultArg reduction_rank 1
+            let transpose_weight = defaultArg transpose_weight false
+            let dialation = defaultArg dialation (D 1)
+            let max_temp_mem_size_in_samples = defaultArg max_temp_mem_size_in_samples 0
+            let op_name = defaultArg op_name "Convolution"
+            let name = defaultArg  name ""
 
             if [0;1] |> List.contains reduction_rank |> not then
                 failwith "Convolution: reduction_rank must be 0 or 1"
@@ -298,7 +337,7 @@ module Layers =
 
             r
 
-        static member Convolution
+        static member Convolution2D
             (
                 convVar: Variable,
                 filter_shape,
@@ -318,16 +357,16 @@ module Layers =
                 L.Convolution(
                     convVar,
                     filter_shape,
-                    !!num_filters,
-                    !!activation,
-                    !!init,
-                    !!pad,
-                    !!strides,
-                    !!bias,
-                    !!init_bias,
-                    !!reduction_rank,
-                    !!dialation,
-                    !!name)
+                    num_filters=defaultArg num_filters 0,
+                    activation=defaultArg activation Activation.NONE,
+                    init=defaultArg init (C.GlorotUniformInitializer()),
+                    pad=defaultArg pad false,
+                    strides=defaultArg strides (D 1),
+                    bias=defaultArg bias true,
+                    init_bias=defaultArg init_bias 0.,
+                    reduction_rank=defaultArg reduction_rank 1,
+                    dialation=defaultArg dialation (D 1),
+                    name=defaultArg name "")
 
         static member BatchNormalization
             (
@@ -348,11 +387,11 @@ module Layers =
                 | Some 1 -> 1
                 | Some x -> failwith "map_rank can only be null or 1 for now"
 
-            let normalization_time_constant = normalization_time_constant |> Option.defaultValue 5000
-            let blend_time_constant         = blend_time_constant |> Option.defaultValue 0
-            let epsilon                     = epsilon |> Option.defaultValue 0.00001
-            let use_cntk_engine             = use_cntk_engine |> Option.defaultValue false
-            let init_scale                  = init_scale |> Option.defaultValue 1.0
+            let normalization_time_constant = defaultArg normalization_time_constant 5000
+            let blend_time_constant         = defaultArg blend_time_constant  0
+            let epsilon                     = defaultArg epsilon  0.00001
+            let use_cntk_engine             = defaultArg use_cntk_engine  false
+            let init_scale                  = defaultArg init_scale 1.0
 
             let norm_shape = !- (D NDShape.InferredDimension)
 
@@ -403,32 +442,12 @@ module Layers =
 
             let plusParam = new Parameter( !- outputDim, 0.0f, device, "plusParam")
             C.Plus(plusParam, timesFunction, outputName)
-
-        static member Dense(
-                            input:Variable, 
-                            outputDim:Shape,
-                            device:DeviceDescriptor,
-                            init:CNTKDictionary,
-                            activation:Activation, 
-                            outputName:string) : Function =
-
-                let input : Variable =
-                    if (input.Shape.Rank <> 1)
-                    then
-                        let newDim = input.Shape.Dimensions |> Seq.reduce(fun d1 d2 -> d1 * d2)
-                        new Variable(C.Reshape(input, shape [ newDim ]))
-                    else input
-
-                let fullyConnected : Function = 
-                    L.FullyConnectedLinearLayer(input, outputDim, init, device, outputName)
-
-                L.activation fullyConnected activation
     
         static member ConvolutionTranspose 
             (
                 convVar : Variable,
                 filter_shape, 
-                num_filters,
+                ?num_filters,
                 ?activation,
                 ?init,
                 ?pad,
@@ -443,18 +462,18 @@ module Layers =
                 ?name
             ) = 
         
-            let activation =  activation |> Option.defaultValue Activation.NONE
-            let init =  init |> Option.defaultValue (C.GlorotUniformInitializer())
-            let pad  = pad |> Option.defaultValue false
-            let strides = strides |> Option.defaultValue (D 1)
-            let sharing = sharing |> Option.defaultValue true
-            let bias = bias |> Option.defaultValue true
-            let init_bias = init_bias |> Option.defaultValue 0.
-            //output_shape : no default value
-            let reduction_rank = reduction_rank |> Option.defaultValue 1
-            let dialation = dialation |> Option.defaultValue (D 1)
-            let max_temp_mem_size_in_samples = max_temp_mem_size_in_samples |> Option.defaultValue 0
-            let name= name |> Option.defaultValue ""
+            let num_filters = defaultArg num_filters 0 //probably not correct as python defaults to null
+            let activation = defaultArg activation Activation.NONE
+            let init = defaultArg init (C.GlorotUniformInitializer())
+            let pad = defaultArg pad false
+            let strides = defaultArg strides (D 1)
+            let sharing = defaultArg sharing true
+            let bias = defaultArg bias true
+            let init_bias = defaultArg init_bias 0.
+            let reduction_rank = defaultArg reduction_rank 1
+            let dialation = defaultArg dialation (D 1)
+            let max_temp_mem_size_in_samples = defaultArg max_temp_mem_size_in_samples 0
+            let name = defaultArg  name ""
 
             if [0;1] |> List.contains reduction_rank |> not then
                 failwith "ConvolutionTranspose: reduction_rank must be 0 or 1"
@@ -551,7 +570,7 @@ module Layers =
             (
                 convVar : Variable,
                 filter_shape : Shape, //a 2D tuple, e.g., (3,3),
-                num_filters,
+                ?num_filters,
                 ?activation,
                 ?init,
                 ?pad,
@@ -563,18 +582,7 @@ module Layers =
                 ?dialation,
                 ?name
             ) = 
-        
-            let activation =  activation |> Option.defaultValue Activation.NONE
-            let init =  init |> Option.defaultValue (C.GlorotUniformInitializer())
-            let pad  = pad |> Option.defaultValue false
-            let strides = strides |> Option.defaultValue (D 1)
-            let bias = bias |> Option.defaultValue true
-            let init_bias = init_bias |> Option.defaultValue 0.
-            //output_shape : no default value
-            let reduction_rank = reduction_rank |> Option.defaultValue 1
-            let dialation = dialation |> Option.defaultValue (D 1)
-            let name= name |> Option.defaultValue ""
-       
+               
             if len filter_shape  > 2 then            
                 failwith "ConvolutionTranspose2D: filter_shape must be a scalar or a 2D tuple, e.g. 3 or (3,3)"
 
@@ -583,15 +591,13 @@ module Layers =
             L.ConvolutionTranspose(
                 convVar,
                 filter_shape,
-                num_filters,
-                activation,
-                init,
-                pad,
-                strides,
-                true,
-                bias,
-                init_bias,
-                (match output_shape with None -> Shape.Unspecified | Some s -> s),
-                reduction_rank=reduction_rank,
-                dialation=dialation,
-                name=name)
+                num_filters=defaultArg num_filters 0,
+                activation=defaultArg activation Activation.NONE,
+                init=defaultArg init (C.GlorotUniformInitializer()),
+                pad=defaultArg pad false,
+                strides=defaultArg strides (D 1),
+                bias=defaultArg bias true,
+                init_bias=defaultArg init_bias 0.,
+                reduction_rank=defaultArg reduction_rank 1,
+                dialation=defaultArg dialation (D 1),
+                name=defaultArg name "")

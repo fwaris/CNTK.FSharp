@@ -31,16 +31,16 @@ let kernel_h, kernel_w = 5, 5
 let stride_h, stride_w = 2, 2
 
 let g_input_dim = 100
-let g_hidden_dim = 128
 let g_output_dim = img_h * img_w
 
 let d_input_dim = g_output_dim
-let d_hidden_dim = 128
-let d_output_dim = 1
 let isFast = true
-let minibatch_size = 1024u
-let num_minibatches = if isFast then 300 else 40000
-let lr = 0.00005
+    
+// training config
+let minibatch_size = 128u
+let num_minibatches = if isFast then 5000 else 10000
+let lr = 0.0002
+let momentum = 0.5 //equivalent to beta1
 
 let streamConfigurations = 
     ResizeArray<StreamConfiguration>(
@@ -91,11 +91,11 @@ let bn_with_relu (x:Variable) =
 
 //use PReLU function to use a leak=0.2 since CNTK implementation
 // of Leaky ReLU is fixed to 0.01
-let bn_with_leaky_relu x =
+let bn_with_leaky_relu x leak =
     let h = L.BatchNormalization(x,map_rank=1)
-    Activation.PReLU 0.2 |> L.activation h 
+    Activation.PReLU leak |> L.activation h 
     
-let convolutional_generator (z:Variable) =
+let convolutional_generator (z:Variable)  =
     let defaultInit() = C.NormalInitializer(0.2)
     printfn "generator input shape: %A" z.Shape
     let s_h2, s_w2 = img_h / 2, img_w / 2 //Input shape (14,14)
@@ -103,12 +103,12 @@ let convolutional_generator (z:Variable) =
     let gfc_dim = 1024
     let gf_dim = 64
 
-    let h0 = L.Dense(z, Ds [gfc_dim], device, defaultInit(), Activation.NONE, "h0")
-    let h0:Variable = !> (bn_with_relu !> h0)
+    let h0 = L.Dense(z, D gfc_dim, init=defaultInit(), activation=Activation.NONE, name="h0")
+    let h0 = !> (bn_with_relu !> h0)
     printfn "h0 shape: %A"  h0.Shape
 
-    let h1 = L.Dense(h0, Ds [gf_dim], device, defaultInit(), Activation.NONE, "h1")
-    let h1:Variable = !> (bn_with_relu !> h1)
+    let h1 = L.Dense(h0, Ds [gf_dim *2; s_h4; s_w4], init=defaultInit(), activation=Activation.NONE, name= "h1")
+    let h1 = !> (bn_with_relu !> h1)
     printfn "h1 shape: %A"  h1.Shape
 
     let h2 = L.ConvolutionTranspose2D(
@@ -119,7 +119,7 @@ let convolutional_generator (z:Variable) =
                 pad=true,
                 output_shape=Ds[s_h2; s_w2],
                 activation=Activation.NONE)
-    let h2:Variable = !> (bn_with_relu !>h2)
+    let h2 = !> (bn_with_relu !>h2)
     printfn "h2 shape %A" h2.Shape
 
     let h3:Variable = 
@@ -136,35 +136,39 @@ let convolutional_generator (z:Variable) =
     C.Reshape(h3, !- (D img_h * img_w))
 
 
-let convolutional_discriminator (x:Variable) =
+let convolutional_discriminator (x:Variable)  =
     let dfc_dim = 1024
     let df_dim = 64
     printfn "Discriminator convolution shape %A" x.Shape
-    let x = C.Reshape(x, !- (Ds [1, img_h, img_w]))
+    let x = C.Reshape(x, !- (Ds [1; img_h; img_w]))
 
-    let h0 = L.con
+    let h0 = L.Convolution2D(!>x, D dkernel, num_filters=1, strides=D dstride)
+    let h0 = !>(bn_with_leaky_relu !>h0 0.2)
+    printfn "h0 shape : %A" h0.Shape 
 
-    
-    
+    let h1 = L.Convolution2D(h0, D dkernel, num_filters=df_dim, strides=D dstride)
+    let h1 = !>(bn_with_leaky_relu !>h1 0.2)
+    printfn "h1 shape : %A" h1.Shape
+
+    let h2 = L.Dense(h1, D dfc_dim, activation=Activation.NONE)
+    let h2 = !>(bn_with_leaky_relu !>h2 0.2)
+    printfn "h3 shape : %A" h2.Shape
+
+    let h3 =  L.Dense(h2, D 1, activation=Activation.Sigmoid)
+    printfn "h3 shape : %A" h3.Output.Shape
+
+    h3
 
 
-let generator z =
-    let h1 = Dense(z,g_hidden_dim,device,Activation.ReLU,"h1")
-    Dense(new Variable(h1),g_output_dim,device,Activation.Tanh,"outG")
-
-let discriminator x =
-    let h1 = Dense(x,d_hidden_dim,device,Activation.ReLU,"h1")
-    Dense(new Variable(h1),d_output_dim,device,Activation.Sigmoid,"outD")
-
-let build_graph noise_shape image_shape g_progress_printer d_progress_printer =
+let build_graph noise_shape image_shape generator discriminator =
     let input_dynamic_axes = new AxisVector([|Axis.DefaultBatchAxis()|])
-    let Z = C.InputVariable(noise_shape,dt,input_dynamic_axes)
-    let X_real = C.InputVariable(image_shape,dt,input_dynamic_axes)
-    let X_real_scaled = C.Minus(!> C.ElementTimes(X_real, scalar (2.0/1.0)),scalar 1.0)
+    let Z = C.InputVariable(noise_shape,dataType,input_dynamic_axes)
+    let X_real = C.InputVariable(image_shape,dataType,input_dynamic_axes)
+    let X_real_scaled = C.ElementDivide(X_real, scalar 255.0)
 
     //generator & discriminator 
-    let X_fake = generator Z
-    let D_real = discriminator !> X_real_scaled
+    let X_fake:Function = generator Z
+    let D_real:Function = discriminator !>X_real_scaled
     let D_fake = D_real.Clone(
                     ParameterCloningMethod.Share,
                     idict [X_real_scaled.Output, X_fake.Output])
@@ -174,21 +178,21 @@ let build_graph noise_shape image_shape g_progress_printer d_progress_printer =
     let G_loss = C.Minus(scalar 1.0, !> C.Log(!> D_fake))
 
     //D_loss = -(C.log(D_real) + C.log(1.0 - D_fake))
-    let D_loss = C.Negate(!> C.Plus(!> C.Log(!>D_real), !> C.Minus(scalar 1.0, !> D_fake))) 
+    let D_loss = C.Negate(!> C.Plus(!> C.Log(!>D_real), !>C.Minus(scalar 1.0, !> D_fake))) 
 
-    let G_learner = C.FSAdaGradLearner(
+    let G_learner = C.AdamLearner(
                         X_fake.Parameters() |> parmVector,
-                        new TrainingParameterScheduleDouble(lr,minibatch_size),
-                        new TrainingParameterScheduleDouble(0.9985724484938566,minibatch_size))
+                        new TrainingParameterScheduleDouble(lr,1u),
+                        new TrainingParameterScheduleDouble(momentum))
 
-    let D_learner = C.FSAdaGradLearner(
+    let D_learner = C.AdamLearner(
                         D_real.Parameters() |> parmVector,
-                        new TrainingParameterScheduleDouble(lr,minibatch_size),
-                        new TrainingParameterScheduleDouble(0.9985724484938566,minibatch_size))
+                        new TrainingParameterScheduleDouble(lr,1u),
+                        new TrainingParameterScheduleDouble(momentum))
 
 
-    let G_trainer = C.CreateTrainer(X_fake,G_loss,null,lrnVector [G_learner], g_progress_printer)
-    let D_trainer = C.CreateTrainer(D_real,D_loss,null,lrnVector [D_learner], d_progress_printer)
+    let G_trainer = C.CreateTrainer(X_fake,G_loss,null,lrnVector [G_learner])
+    let D_trainer = C.CreateTrainer(D_real,D_loss,null,lrnVector [D_learner])
 
     X_real, X_fake, Z, G_trainer, D_trainer   
     
@@ -202,18 +206,19 @@ let p() = {new ProgressWriter(1u,1u,1u,1u,1u,1u) with
                 printfn "%s=%f" s1 s2
          }
 
-let train (reader_train:MinibatchSource) =
-    let featureStreamInfo = reader_train.StreamInfo(featureStreamName)
-    let k =2 
-    let print_frequency_mbsize = num_minibatches / 50
-    let pp_G = p()
-    let pp_D=  p()
+let train (reader_train:MinibatchSource) generator discriminator =
     let X_real, X_fake, Z, G_trainer, D_trainer =
         build_graph 
             (shape [g_input_dim]) 
             (shape [d_input_dim])
-            (prgwVector [pp_G])
-            (prgwVector [pp_D])
+            generator
+            discriminator
+
+    let featureStreamInfo = reader_train.StreamInfo(featureStreamName)
+    let k =2 
+    let print_frequency_mbsize = num_minibatches / 25
+    let pp_G = p()
+    let pp_D=  p()
 
     for train_step in 1 .. num_minibatches do
 
@@ -233,7 +238,9 @@ let train (reader_train:MinibatchSource) =
         //train generator
         let Z_data = noise_sample (int minibatch_size)
         let batch_inputs = idict [Z, Z_data]
-        let b = G_trainer.TrainMinibatch(batch_inputs,device) //|> ignore
+        let b = G_trainer.TrainMinibatch(batch_inputs,device) //|> ignore 
+        //hmmm python code does it twice
+
         if train_step % 100 = 0 then
             let l_D = D_trainer.PreviousMinibatchLossAverage()
             let l_G = G_trainer.PreviousMinibatchLossAverage()
@@ -246,8 +253,12 @@ let train (reader_train:MinibatchSource) =
 *)
 
 let reader_train = minibatchSource
-let G_input, G_output, G_trainer_loss = train reader_train
-G_output.Save(Path.Combine(@"D:\repodata\fscntk","Generator.bin"))
+
+let G_input, G_output, G_trainer_loss = train reader_train 
+                                              convolutional_generator 
+                                              convolutional_discriminator
+
+G_output.Save(Path.Combine(@"D:\repodata\fscntk","GeneratorDCGAN.bin"))
 
 let noise = noise_sample 36
 let outMap = idict[G_output.Output,(null:Value)]
